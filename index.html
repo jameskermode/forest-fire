@@ -103,6 +103,7 @@
   <span class="key">&uarr;</span><span class="key">&larr;</span><span class="key">&darr;</span><span class="key">&rarr;</span> Move
   &nbsp;&nbsp;<span class="key">Space</span> Spray water
   &nbsp;&nbsp;<span class="key">R</span> Reset
+  &nbsp;&nbsp;<span class="key">Ctrl+A</span> Plane mode
   &nbsp;&nbsp;Mouse drag to orbit
 </div>
 <div id="touch-controls">
@@ -154,7 +155,10 @@ let fuel = new Float32Array(SZ);
 
 function idx(i,j,k){ return i + j*N + k*NN; }
 let initTC = 0, gameOver = false, waterLevel = WATER_MAX;
+let planeMode = false, planeY = 0.3, lastBombFrame = 0;
+const waterBombs = [];
 const REFILL_POS = [0.92, 0.92]; // corner of grid
+const BOMB_R = 0.2; // water bomb splash radius
 
 function initFields(){
   temp.fill(0); tempN.fill(0); fuel.fill(0);
@@ -203,6 +207,22 @@ function applyWater(wx,wz){
         const c=i+j*N+k*NN;
         temp[c]*=WATER_STR;
         if(temp[c]>IGN_TEMP) fuel[c]*=0.95;
+      }
+    }
+  }
+}
+
+function applyWaterBomb(wx,wz){
+  const r2=BOMB_R*BOMB_R;
+  for(let k=0;k<N;k++){
+    const dz=k/N-wz, dz2=dz*dz;
+    if(dz2>r2) continue;
+    for(let j=0;j<N;j++) for(let i=0;i<N;i++){
+      const dx=i/N-wx;
+      if(dx*dx+dz2<r2){
+        const c=i+j*N+k*NN;
+        temp[c]*=0.02;
+        if(temp[c]>IGN_TEMP) fuel[c]*=0.9;
       }
     }
   }
@@ -392,6 +412,47 @@ hL.position.set(0,0.01,-0.03); eng.add(hL);
 scene.add(eng);
 let ex=0.5, ez=0.5, eAng=0;
 
+// Fire plane (hidden until Ctrl+A)
+const plane=new THREE.Group();
+// Fuselage
+const fuseMat=new THREE.MeshLambertMaterial({color:0xcc0000,emissive:0x330000});
+const fuse=new THREE.Mesh(new THREE.BoxGeometry(0.015,0.012,0.06),fuseMat);
+fuse.position.y=0.006; plane.add(fuse);
+// Wings
+const wingMat=new THREE.MeshLambertMaterial({color:0xdd2222,emissive:0x220000});
+const wings=new THREE.Mesh(new THREE.BoxGeometry(0.09,0.003,0.025),wingMat);
+wings.position.set(0,0.008,0.005); plane.add(wings);
+// Tail fin (vertical)
+const tailV=new THREE.Mesh(new THREE.BoxGeometry(0.003,0.015,0.012),wingMat);
+tailV.position.set(0,0.016,0.028); plane.add(tailV);
+// Tail wings (horizontal)
+const tailH=new THREE.Mesh(new THREE.BoxGeometry(0.035,0.003,0.01),wingMat);
+tailH.position.set(0,0.008,0.028); plane.add(tailH);
+// Nose cone
+const nose=new THREE.Mesh(new THREE.BoxGeometry(0.01,0.01,0.008),
+  new THREE.MeshLambertMaterial({color:0x888888,emissive:0x111111}));
+nose.position.set(0,0.006,-0.034); plane.add(nose);
+// Propeller
+const propMat=new THREE.MeshBasicMaterial({color:0x333333});
+const prop=new THREE.Mesh(new THREE.BoxGeometry(0.04,0.004,0.002),propMat);
+prop.position.set(0,0.006,-0.039); plane.add(prop);
+// White stripes on wings
+const plStripe=new THREE.MeshBasicMaterial({color:0xeeeeee});
+const ps1=new THREE.Mesh(new THREE.BoxGeometry(0.09,0.001,0.003),plStripe);
+ps1.position.set(0,0.0101,0.005); plane.add(ps1);
+plane.visible=false;
+scene.add(plane);
+
+// Water bomb pool (reusable meshes)
+const BOMB_POOL=5;
+const bombMat=new THREE.MeshLambertMaterial({color:0x2266ff,emissive:0x112244,transparent:true,opacity:0.8});
+const bombMeshes=[];
+for(let b=0;b<BOMB_POOL;b++){
+  const bm=new THREE.Mesh(new THREE.BoxGeometry(0.04,0.04,0.04),bombMat);
+  bm.visible=false; scene.add(bm);
+  bombMeshes.push(bm);
+}
+
 // Water refill station (red tank with pipe)
 const refillGroup=new THREE.Group();
 const rty=terrainY(REFILL_POS[0],REFILL_POS[1]);
@@ -469,6 +530,12 @@ document.addEventListener('keydown',e=>{
   keys[e.code]=true;
   if(['Space','ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.code)) e.preventDefault();
   if(e.code==='KeyR') resetGame();
+  if(e.code==='KeyA'&&e.ctrlKey){
+    e.preventDefault();
+    planeMode=!planeMode;
+    eng.visible=!planeMode;
+    plane.visible=planeMode;
+  }
 });
 document.addEventListener('keyup',e=>{keys[e.code]=false;});
 
@@ -604,7 +671,12 @@ function extractPts(){
 
 // Game loop
 let frame=0;
-function resetGame(){ initFields(); ex=0.5; ez=0.5; waterLevel=WATER_MAX; }
+function resetGame(){
+  initFields(); ex=0.5; ez=0.5; waterLevel=WATER_MAX;
+  planeMode=false; eng.visible=true; plane.visible=false;
+  for(const b of waterBombs) b.mesh.visible=false;
+  waterBombs.length=0;
+}
 window.resetGame=resetGame;
 initFields();
 document.getElementById('loading').style.display='none';
@@ -625,27 +697,67 @@ function animate(){
     dz-=Math.max(-1,Math.min(1,touchDZ*sens));
     touchDX=0; touchDZ=0;
   }
+  const spd=planeMode?ENG_SPD*1.5:ENG_SPD;
   if(dx||dz){
     const l=Math.sqrt(dx*dx+dz*dz); dx/=l; dz/=l;
-    ex=Math.max(0.02,Math.min(0.98,ex+dx*ENG_SPD));
-    ez=Math.max(0.02,Math.min(0.98,ez+dz*ENG_SPD));
+    ex=Math.max(0.02,Math.min(0.98,ex+dx*spd));
+    ez=Math.max(0.02,Math.min(0.98,ez+dz*spd));
     eAng=Math.atan2(dx,dz);
   }
   const wantSpray=!!keys['Space']||touchSpray;
-  // Refill water near the station
-  const rdx=ex-REFILL_POS[0], rdz=ez-REFILL_POS[1];
-  if(rdx*rdx+rdz*rdz<REFILL_R*REFILL_R){
-    const empty=1-waterLevel/WATER_MAX; // 1 when empty, 0 when full
-    waterLevel=Math.min(WATER_MAX,waterLevel+WATER_REFILL*empty);
+
+  let spray=false;
+  if(planeMode){
+    // Drop water bomb (one per 30 frames)
+    if(wantSpray&&frame-lastBombFrame>30&&waterBombs.length<BOMB_POOL){
+      lastBombFrame=frame;
+      const bm=bombMeshes[waterBombs.length];
+      bm.visible=true;
+      waterBombs.push({x:ex,z:ez,y:planeY,vy:0,mesh:bm});
+    }
+  } else {
+    // Ground mode: refill + spray
+    const rdx=ex-REFILL_POS[0], rdz=ez-REFILL_POS[1];
+    if(rdx*rdx+rdz*rdz<REFILL_R*REFILL_R){
+      const empty=1-waterLevel/WATER_MAX;
+      waterLevel=Math.min(WATER_MAX,waterLevel+WATER_REFILL*empty);
+    }
+    spray=wantSpray&&waterLevel>0;
+    if(spray) waterLevel=Math.max(0,waterLevel-WATER_USE);
   }
-  const spray=wantSpray&&waterLevel>0;
-  if(spray) waterLevel=Math.max(0,waterLevel-WATER_USE);
 
   if(!gameOver){
     for(let s=0;s<SUBSTEPS;s++){ simStep(); if(spray) applyWater(ex,ez); }
   }
 
-  eng.position.set(ex,terrainY(ex,ez),ez); eng.rotation.y=eAng;
+  // Update water bombs
+  for(let b=waterBombs.length-1;b>=0;b--){
+    const bomb=waterBombs[b];
+    bomb.vy-=0.0004;
+    bomb.y+=bomb.vy;
+    bomb.mesh.position.set(bomb.x,bomb.y,bomb.z);
+    bomb.mesh.rotation.x+=0.05; bomb.mesh.rotation.z+=0.03;
+    if(bomb.y<=terrainY(bomb.x,bomb.z)){
+      applyWaterBomb(bomb.x,bomb.z);
+      bomb.mesh.visible=false;
+      // Splash: reuse water spray particles
+      const oldEx=ex, oldEz=ez;
+      ex=bomb.x; ez=bomb.z;
+      for(let s=0;s<8;s++) spawnW();
+      ex=oldEx; ez=oldEz;
+      waterBombs.splice(b,1);
+    }
+  }
+
+  // Vehicle position
+  if(planeMode){
+    plane.position.set(ex,planeY,ez);
+    plane.rotation.y=eAng;
+    plane.rotation.z=dx*-0.3; // bank on turns
+    prop.rotation.z+=0.5; // spin propeller
+  } else {
+    eng.position.set(ex,terrainY(ex,ez),ez); eng.rotation.y=eAng;
+  }
   const flash=Math.sin(performance.now()*0.01)>0;
   lbMat.color.setHex(flash?0x4488ff:0x111133);
   lbMat2.color.setHex(flash?0x110000:0xff2200);
