@@ -206,6 +206,19 @@ scene.add(gnd);
 const grid=new THREE.GridHelper(1,20,0x112211,0x0a150a);
 grid.position.set(0.5,0.001,0.5); scene.add(grid);
 
+// Forest floor (DataTexture updated from fuel grid)
+const floorData=new Uint8Array(N*N*4);
+const floorTex=new THREE.DataTexture(floorData,N,N);
+floorTex.magFilter=THREE.LinearFilter;
+floorTex.minFilter=THREE.LinearFilter;
+const floorPlane=new THREE.Mesh(
+  new THREE.PlaneGeometry(40/N,40/N),
+  new THREE.MeshLambertMaterial({map:floorTex})
+);
+floorPlane.rotation.x=-Math.PI/2;
+floorPlane.position.set(0.5,-0.002,0.5);
+scene.add(floorPlane);
+
 // Fire particles (custom shader for glow)
 const MF=40000;
 const fGeo=new THREE.BufferGeometry();
@@ -370,6 +383,24 @@ function extractPts(){
   }
   trunkMesh.count=trc;
   trunkMesh.instanceMatrix.needsUpdate=true;
+  // Update forest floor texture from fuel/temp grid
+  for(let k=0;k<N;k++) for(let i=0;i<N;i++){
+    const c=i+N+k*NN, f=fuel[c], t=temp[c];
+    const pi=(k*N+i)*4;
+    if(t>0.15){
+      floorData[pi]=Math.min(255,t*300)|0;
+      floorData[pi+1]=Math.min(255,t*100)|0;
+      floorData[pi+2]=0;
+    } else if(f>0.1){
+      floorData[pi]=12+(f*30)|0;
+      floorData[pi+1]=35+(f*70)|0;
+      floorData[pi+2]=5+(f*12)|0;
+    } else {
+      floorData[pi]=6; floorData[pi+1]=6; floorData[pi+2]=6;
+    }
+    floorData[pi+3]=255;
+  }
+  floorTex.needsUpdate=true;
   fGeo.setDrawRange(0,fi);
   fGeo.attributes.position.needsUpdate=true;
   fGeo.attributes.color.needsUpdate=true;
