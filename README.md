@@ -17,20 +17,40 @@ generated forest from a spreading wildfire. Built with Three.js.
 The fire simulation runs on a 48x48x48 voxel grid with two scalar fields:
 **temperature** and **fuel**.
 
-Each simulation step (3 substeps per frame):
+Each simulation step (3 substeps per frame), the temperature field `T` is
+updated at every interior cell `(i, j, k)`:
 
-1. **Diffusion** — heat spreads to neighbouring cells via a discrete Laplacian,
-   modelling thermal conduction through air.
-2. **Buoyancy** — an upwind advection term carries heat upward, simulating hot
-   air rising. This creates the visible flame plume above burning trees.
-3. **Combustion** — cells above the ignition temperature with remaining fuel
-   generate heat proportional to their fuel level. Fuel is consumed gradually.
-4. **Cooling** — a linear damping term bleeds heat away over time.
+```
+∇²T = T[i+1] + T[i-1] + T[j+1] + T[j-1] + T[k+1] + T[k-1] − 6T    (discrete Laplacian)
+
+v = β · T                                                              (buoyancy velocity)
+
+T_adv = T − v · (T − T[j-1]) / N                                      (upwind advection)
+
+Q = B · f   if T > T_ign and f > 0,  else 0                           (combustion source)
+
+T_new = T_adv + Δt · (α · N² · ∇²T  +  Q  −  γ · T)                  (full update)
+
+f_new = f − r · Δt   if burning                                       (fuel consumption)
+```
+
+| Symbol | Constant | Value  | Meaning                    |
+|--------|----------|--------|----------------------------|
+| α      | DIFFUSION| 0.0004 | Thermal diffusivity        |
+| β      | BUOYANCY | 1.0    | Buoyancy coupling strength |
+| γ      | COOLING  | 0.008  | Linear heat damping rate   |
+| B      | BURN_RATE| 3.0    | Heat generated per fuel    |
+| r      | FUEL_RATE| 0.01   | Fuel consumption rate      |
+| T_ign  | IGN_TEMP | 0.22   | Ignition temperature       |
+| Δt     | DT       | 0.014  | Timestep                   |
+| N      | N        | 48     | Grid resolution per axis   |
+
+The water spray suppresses fire by multiplying local temperature by 0.08
+and fuel by 0.92 within a radius around the fire engine.
 
 Trees are placed as fuel on a single ground layer. Fire spreads horizontally
 through thermal diffusion between neighbouring trees and rises vertically
-through buoyancy. The water spray multiplies local temperature and fuel by
-a suppression factor, cooling the fire and destroying fuel.
+through buoyancy.
 
 ## Vibe-coded with Claude Code
 
