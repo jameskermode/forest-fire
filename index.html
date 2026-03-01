@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
 <title>Forest Fire Fighter</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -25,6 +26,7 @@
   .stat-trees span { color: #44cc44; }
   .stat-burning span { color: #ff6633; }
   .stat-saved span { color: #44aaff; }
+  .stat-water span { color: #44ddff; }
   #controls-hint {
     position: absolute; bottom: 16px; left: 50%; transform: translateX(-50%);
     color: rgba(255,255,255,0.5); font-size: 13px;
@@ -55,6 +57,30 @@
     color: #ff6633; font-size: 20px;
     text-shadow: 0 0 20px rgba(255,100,0,0.4);
   }
+  #touch-controls {
+    display: none; position: absolute; bottom: 24px; right: 24px;
+    gap: 12px; pointer-events: auto;
+  }
+  #touch-controls button {
+    width: 64px; height: 64px; border-radius: 50%;
+    border: 2px solid rgba(255,255,255,0.3);
+    font-family: 'Courier New', monospace; font-size: 13px; font-weight: bold;
+    color: #fff; cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
+  }
+  #btn-spray {
+    background: radial-gradient(circle, rgba(68,153,255,0.5), rgba(68,153,255,0.15));
+  }
+  #btn-spray.active { background: radial-gradient(circle, rgba(68,153,255,0.8), rgba(68,153,255,0.3)); }
+  #btn-reset {
+    background: radial-gradient(circle, rgba(255,100,0,0.3), rgba(255,100,0,0.1));
+    width: 48px; height: 48px; font-size: 11px;
+  }
+  @media (pointer: coarse) {
+    #touch-controls { display: flex; }
+    #controls-hint { display: none; }
+  }
 </style>
 </head>
 <body>
@@ -65,6 +91,7 @@
     <div class="stat stat-trees">Trees: <span id="stat-trees">0</span></div>
     <div class="stat stat-burning">Burning: <span id="stat-burning">0</span></div>
     <div class="stat stat-saved">Saved: <span id="stat-saved">0</span></div>
+    <div class="stat stat-water">Water: <span id="stat-water">100</span>%</div>
   </div>
 </div>
 <div id="controls-hint">
@@ -73,6 +100,10 @@
   &nbsp;&nbsp;<span class="key">Space</span> Spray water
   &nbsp;&nbsp;<span class="key">R</span> Reset
   &nbsp;&nbsp;Mouse drag to orbit
+</div>
+<div id="touch-controls">
+  <button id="btn-reset">RST</button>
+  <button id="btn-spray">SPRAY</button>
 </div>
 <div id="game-over">
   <h1>FIRE OUT!</h1>
@@ -96,12 +127,16 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 // ═══════════════════════════════════════
 const N = 48;
 const DT = 0.014;
-const DIFFUSION = 0.0004;
+const DIFFUSION = 0.00032;
 const BUOYANCY = 1.0;
 const COOLING = 0.008;
 const IGN_TEMP = 0.22;
-const BURN_RATE = 3.0;
-const FUEL_RATE = 0.01;
+const BURN_RATE = 2.5;
+const FUEL_RATE = 0.008;
+const WATER_MAX = 100;
+const WATER_USE = 0.35;
+const WATER_REFILL = 0.8;
+const REFILL_R = 0.06;
 const WATER_R = 0.07;
 const WATER_STR = 0.08;
 const ENG_SPD = 0.012;
@@ -113,7 +148,8 @@ let tempN = new Float32Array(SZ);
 let fuel = new Float32Array(SZ);
 
 function idx(i,j,k){ return i + j*N + k*NN; }
-let initTC = 0, gameOver = false;
+let initTC = 0, gameOver = false, waterLevel = WATER_MAX;
+const REFILL_POS = [0.92, 0.92]; // corner of grid
 
 function initFields(){
   temp.fill(0); tempN.fill(0); fuel.fill(0);
@@ -167,6 +203,13 @@ function applyWater(wx,wz){
   }
 }
 
+// Terrain height (gentle undulating hills)
+function terrainY(x,z){
+  return 0.01*Math.sin(x*8.7)*Math.cos(z*7.3)
+       +0.006*Math.sin(x*17.1+2.3)*Math.sin(z*15.7+1.1)
+       +0.003*Math.cos(x*29.3+0.7)*Math.sin(z*23.1+3.7);
+}
+
 // ═══════════════════════════════════════
 //  THREE.JS
 // ═══════════════════════════════════════
@@ -189,6 +232,9 @@ ctrl.target.set(0.5, 0.1, 0.5);
 ctrl.enableDamping=true; ctrl.dampingFactor=0.08;
 ctrl.maxPolarAngle=Math.PI*0.48;
 ctrl.minDistance=0.3; ctrl.maxDistance=3;
+// Disable orbit on touch — swipe controls the engine instead
+const isTouch=matchMedia('(pointer: coarse)').matches;
+if(isTouch){ ctrl.enableRotate=false; ctrl.enablePan=false; }
 
 scene.add(new THREE.AmbientLight(0x1a1510, 0.4));
 scene.add(new THREE.HemisphereLight(0x223344, 0x221100, 0.3));
@@ -197,25 +243,28 @@ const fL1 = new THREE.PointLight(0xff5500,0,3);
 fL1.position.set(0.5,0.4,0.5); scene.add(fL1);
 const fL2 = new THREE.PointLight(0xff3300,0,2); scene.add(fL2);
 
-const gnd = new THREE.Mesh(
-  new THREE.PlaneGeometry(1.6,1.6),
-  new THREE.MeshLambertMaterial({color:0x0a2205})
-);
+const gndGeo=new THREE.PlaneGeometry(1.6,1.6,40,40);
+const gndVerts=gndGeo.attributes.position;
+for(let v=0;v<gndVerts.count;v++){
+  gndVerts.setZ(v,terrainY(gndVerts.getX(v)+0.5,-gndVerts.getY(v)+0.5));
+}
+gndGeo.computeVertexNormals();
+const gnd=new THREE.Mesh(gndGeo,new THREE.MeshLambertMaterial({color:0x0a2205}));
 gnd.rotation.x=-Math.PI/2; gnd.position.set(0.5,-0.005,0.5);
 scene.add(gnd);
-
-const grid=new THREE.GridHelper(1,20,0x112211,0x0a150a);
-grid.position.set(0.5,0.001,0.5); scene.add(grid);
 
 // Forest floor (DataTexture updated from fuel grid)
 const floorData=new Uint8Array(N*N*4);
 const floorTex=new THREE.DataTexture(floorData,N,N);
 floorTex.magFilter=THREE.LinearFilter;
 floorTex.minFilter=THREE.LinearFilter;
-const floorPlane=new THREE.Mesh(
-  new THREE.PlaneGeometry(40/N,40/N),
-  new THREE.MeshLambertMaterial({map:floorTex})
-);
+const floorGeo=new THREE.PlaneGeometry(40/N,40/N,40,40);
+const floorVerts=floorGeo.attributes.position;
+for(let v=0;v<floorVerts.count;v++){
+  floorVerts.setZ(v,terrainY(floorVerts.getX(v)+0.5,-floorVerts.getY(v)+0.5));
+}
+floorGeo.computeVertexNormals();
+const floorPlane=new THREE.Mesh(floorGeo,new THREE.MeshLambertMaterial({map:floorTex}));
 floorPlane.rotation.x=-Math.PI/2;
 floorPlane.position.set(0.5,-0.002,0.5);
 scene.add(floorPlane);
@@ -272,19 +321,110 @@ const _td=new THREE.Object3D();
 
 // Fire engine
 const eng=new THREE.Group();
-const ebody=new THREE.Mesh(new THREE.BoxGeometry(0.032,0.018,0.045),
-  new THREE.MeshLambertMaterial({color:0xcc0000,emissive:0x330000}));
-ebody.position.y=0.012; eng.add(ebody);
-const ecab=new THREE.Mesh(new THREE.BoxGeometry(0.025,0.014,0.02),
-  new THREE.MeshLambertMaterial({color:0xdd1111,emissive:0x220000}));
-ecab.position.set(0,0.024,-0.008); eng.add(ecab);
+const redMat=new THREE.MeshLambertMaterial({color:0xcc0000,emissive:0x330000});
+const darkMat=new THREE.MeshLambertMaterial({color:0x222222});
+const chromeMat=new THREE.MeshLambertMaterial({color:0x999999,emissive:0x111111});
+// Body (rear section)
+const ebody=new THREE.Mesh(new THREE.BoxGeometry(0.03,0.016,0.03),redMat);
+ebody.position.set(0,0.011,0.005); eng.add(ebody);
+// Cab (front)
+const ecab=new THREE.Mesh(new THREE.BoxGeometry(0.028,0.019,0.018),redMat.clone());
+ecab.material.color.setHex(0xdd1111); ecab.material.emissive.setHex(0x220000);
+ecab.position.set(0,0.0125,-0.015); eng.add(ecab);
+// Windshield
+const ws=new THREE.Mesh(new THREE.BoxGeometry(0.024,0.010,0.001),
+  new THREE.MeshLambertMaterial({color:0x88bbdd,emissive:0x223344,transparent:true,opacity:0.7}));
+ws.position.set(0,0.018,-0.0245); eng.add(ws);
+// Front bumper
+const fb=new THREE.Mesh(new THREE.BoxGeometry(0.032,0.005,0.003),chromeMat);
+fb.position.set(0,0.004,-0.026); eng.add(fb);
+// Rear bumper
+const rb=new THREE.Mesh(new THREE.BoxGeometry(0.032,0.005,0.003),chromeMat);
+rb.position.set(0,0.004,0.021); eng.add(rb);
+// White stripes
+const stripeMat=new THREE.MeshBasicMaterial({color:0xeeeeee});
+const s1=new THREE.Mesh(new THREE.BoxGeometry(0.001,0.003,0.05),stripeMat);
+s1.position.set(-0.0155,0.012,0); eng.add(s1);
+const s2=s1.clone(); s2.position.x=0.0155; eng.add(s2);
+// Wheels
+const whlGeo=new THREE.CylinderGeometry(0.005,0.005,0.005,8);
+[[-0.016,0.005,-0.013],[0.016,0.005,-0.013],
+ [-0.016,0.005,0.013],[0.016,0.005,0.013]].forEach(p=>{
+  const w=new THREE.Mesh(whlGeo,darkMat); w.rotation.z=Math.PI/2;
+  w.position.set(...p); eng.add(w);
+});
+// Water tank on top
+const tank=new THREE.Mesh(new THREE.CylinderGeometry(0.007,0.007,0.026,8),chromeMat);
+tank.rotation.x=Math.PI/2; tank.position.set(0,0.023,0.005); eng.add(tank);
+// Ladder rack
+const ladderMat=new THREE.MeshLambertMaterial({color:0xaaaaaa});
+[[-0.008,0.03,0.005],[0.008,0.03,0.005]].forEach(p=>{
+  const r=new THREE.Mesh(new THREE.BoxGeometry(0.001,0.001,0.028),ladderMat);
+  r.position.set(...p); eng.add(r);
+});
+for(let n=0;n<4;n++){
+  const rung=new THREE.Mesh(new THREE.BoxGeometry(0.015,0.001,0.001),ladderMat);
+  rung.position.set(0,0.031,-0.007+n*0.008); eng.add(rung);
+}
+// Light bar (blue left, red right)
 const lbMat=new THREE.MeshBasicMaterial({color:0x4488ff});
-const lb=new THREE.Mesh(new THREE.BoxGeometry(0.02,0.004,0.004),lbMat);
-lb.position.set(0,0.033,-0.008); eng.add(lb);
+const lbMat2=new THREE.MeshBasicMaterial({color:0xff2200});
+const lb1=new THREE.Mesh(new THREE.BoxGeometry(0.007,0.004,0.005),lbMat);
+lb1.position.set(-0.006,0.026,-0.015); eng.add(lb1);
+const lb2=new THREE.Mesh(new THREE.BoxGeometry(0.007,0.004,0.005),lbMat2);
+lb2.position.set(0.006,0.026,-0.015); eng.add(lb2);
+// Headlights
+const hlMat=new THREE.MeshBasicMaterial({color:0xffffaa});
+[[-0.01,0.009,-0.027],[0.01,0.009,-0.027]].forEach(p=>{
+  const hl=new THREE.Mesh(new THREE.BoxGeometry(0.005,0.004,0.001),hlMat);
+  hl.position.set(...p); eng.add(hl);
+});
+// Lights
 const eL=new THREE.PointLight(0x4488ff,0.3,0.15);
-eL.position.set(0,0.04,0); eng.add(eL);
+eL.position.set(0,0.035,-0.015); eng.add(eL);
+const hL=new THREE.PointLight(0xffffaa,0.15,0.08);
+hL.position.set(0,0.01,-0.03); eng.add(hL);
 scene.add(eng);
 let ex=0.5, ez=0.5, eAng=0;
+
+// Water refill station (red tank with pipe)
+const refillGroup=new THREE.Group();
+const rty=terrainY(REFILL_POS[0],REFILL_POS[1]);
+refillGroup.position.set(REFILL_POS[0],rty,REFILL_POS[1]);
+// Tank body (horizontal cylinder like the engine's tank, but bigger)
+const rTankMat=new THREE.MeshLambertMaterial({color:0xcc2200,emissive:0x330800});
+const rTank=new THREE.Mesh(new THREE.CylinderGeometry(0.022,0.022,0.06,10),rTankMat);
+rTank.rotation.z=Math.PI/2; rTank.position.y=0.028; refillGroup.add(rTank);
+// End caps (slightly larger discs)
+const capMat=new THREE.MeshLambertMaterial({color:0xaa1800,emissive:0x220500});
+const cap1=new THREE.Mesh(new THREE.CylinderGeometry(0.024,0.024,0.003,10),capMat);
+cap1.rotation.z=Math.PI/2; cap1.position.set(-0.031,0.028,0); refillGroup.add(cap1);
+const cap2=cap1.clone(); cap2.position.x=0.031; refillGroup.add(cap2);
+// Support legs
+const legMat=new THREE.MeshLambertMaterial({color:0x444444});
+[[-0.02,0,0.012],[0.02,0,0.012],[-0.02,0,-0.012],[0.02,0,-0.012]].forEach(p=>{
+  const leg=new THREE.Mesh(new THREE.BoxGeometry(0.004,0.012,0.004),legMat);
+  leg.position.set(p[0],0.006,p[2]); refillGroup.add(leg);
+});
+// White "WATER" stripe
+const rStripe=new THREE.Mesh(new THREE.BoxGeometry(0.04,0.008,0.001),
+  new THREE.MeshBasicMaterial({color:0xeeeeee}));
+rStripe.position.set(0,0.028,0.023); refillGroup.add(rStripe);
+// Pipe/tap protruding from front
+const pipeMat=new THREE.MeshLambertMaterial({color:0x888888,emissive:0x111111});
+const pipeH=new THREE.Mesh(new THREE.CylinderGeometry(0.003,0.003,0.025,6),pipeMat);
+pipeH.rotation.x=Math.PI/2; pipeH.position.set(0,0.02,0.035); refillGroup.add(pipeH);
+// Downward nozzle
+const pipeV=new THREE.Mesh(new THREE.CylinderGeometry(0.003,0.0025,0.015,6),pipeMat);
+pipeV.position.set(0,0.013,0.047); refillGroup.add(pipeV);
+// Tap handle
+const tapHandle=new THREE.Mesh(new THREE.BoxGeometry(0.01,0.003,0.003),
+  new THREE.MeshLambertMaterial({color:0x4488ff}));
+tapHandle.position.set(0,0.024,0.035); refillGroup.add(tapHandle);
+// Subtle blue glow at nozzle
+const refillGlow=new THREE.PointLight(0x4488ff,0.3,0.12);
+refillGlow.position.set(0,0.01,0.047); refillGroup.add(refillGlow);
+scene.add(refillGroup);
 
 // Water spray
 const MW=300;
@@ -302,7 +442,7 @@ let wIdx=0;
 function spawnW(){
   for(let n=0;n<15;n++){
     const i=(wIdx++)%MW, a=Math.random()*Math.PI*2, sp=0.01+Math.random()*0.015;
-    wPos[i*3]=ex; wPos[i*3+1]=0.03; wPos[i*3+2]=ez;
+    wPos[i*3]=ex; wPos[i*3+1]=terrainY(ex,ez)+0.03; wPos[i*3+2]=ez;
     wVel[i*3]=Math.cos(a)*sp; wVel[i*3+1]=0.008+Math.random()*0.01; wVel[i*3+2]=Math.sin(a)*sp;
     wLife[i]=1;
   }
@@ -327,6 +467,38 @@ document.addEventListener('keydown',e=>{
 });
 document.addEventListener('keyup',e=>{keys[e.code]=false;});
 
+// Touch controls
+let touchDX=0, touchDZ=0, touchSpray=false, touchId=null;
+document.addEventListener('touchstart',e=>{
+  for(const t of e.changedTouches){
+    if(t.target.id==='btn-spray'||t.target.id==='btn-reset') continue;
+    if(touchId===null){ touchId=t.identifier; touchDX=0; touchDZ=0; }
+  }
+},{passive:true});
+document.addEventListener('touchmove',e=>{
+  for(const t of e.changedTouches){
+    if(t.identifier===touchId){
+      // Use movement delta per frame, scaled for sensitivity
+      touchDX+= t.clientX-(touchPrevX||t.clientX);
+      touchDZ+= t.clientY-(touchPrevY||t.clientY);
+      touchPrevX=t.clientX; touchPrevY=t.clientY;
+    }
+  }
+  e.preventDefault();
+},{passive:false});
+document.addEventListener('touchend',e=>{
+  for(const t of e.changedTouches){
+    if(t.identifier===touchId){ touchId=null; touchPrevX=0; touchPrevY=0; }
+  }
+},{passive:true});
+let touchPrevX=0, touchPrevY=0;
+// Spray button
+const btnSpray=document.getElementById('btn-spray');
+btnSpray.addEventListener('touchstart',e=>{touchSpray=true;btnSpray.classList.add('active');e.preventDefault();},{passive:false});
+btnSpray.addEventListener('touchend',e=>{touchSpray=false;btnSpray.classList.remove('active');},{passive:true});
+// Reset button
+document.getElementById('btn-reset').addEventListener('touchstart',e=>{resetGame();e.preventDefault();},{passive:false});
+
 // Deterministic hash for stable per-tree variation
 function hashF(a,b){ return (((a*2654435761|0)^(b*2246822519|0))>>>0)/4294967296; }
 
@@ -339,7 +511,7 @@ function extractPts(){
     if(t>0.06&&fi<MF){
       const x=i*inv, y=j*inv, z=k*inv;
       fPos[fi*3]=x+(Math.random()-0.5)*0.9*inv;
-      fPos[fi*3+1]=y+(Math.random()-0.5)*0.9*inv;
+      fPos[fi*3+1]=terrainY(x,z)+y+(Math.random()-0.5)*0.9*inv;
       fPos[fi*3+2]=z+(Math.random()-0.5)*0.9*inv;
       fCol[fi*3]=Math.min(1,t*3);
       fCol[fi*3+1]=Math.min(1,t*1.8)*t;
@@ -353,13 +525,14 @@ function extractPts(){
     const c=i+N+k*NN, f=fuel[c], t=temp[c];
     if(f>0.1 && t<=0.06){
       const x=i*inv, z=k*inv;
+      const ty=terrainY(x,z);
       const h0=hashF(i,k), h1=hashF(k,i);
       const treeH=0.1+h0*0.13;
       const trunkH=treeH*0.45;
       const canR=0.01+h1*0.012;
       // Trunk: instanced cylinder
       if(trc<MAX_TREES){
-        _td.position.set(x,trunkH/2,z);
+        _td.position.set(x,ty+trunkH/2,z);
         _td.scale.set(1,trunkH,1);
         _td.updateMatrix();
         trunkMesh.setMatrixAt(trc,_td.matrix);
@@ -370,7 +543,7 @@ function extractPts(){
         const ph=hashF(i*51+p,k*73+p);
         const pa=hashF(i*37+p*13,k*59+p*7)*6.2832;
         const pr=hashF(i*41+p*17,k*67+p*11)*canR;
-        const py=trunkH+ph*0.8*(treeH-trunkH);
+        const py=ty+trunkH+ph*0.8*(treeH-trunkH);
         tPos[ti*3]=x+Math.cos(pa)*pr;
         tPos[ti*3+1]=py;
         tPos[ti*3+2]=z+Math.sin(pa)*pr;
@@ -414,7 +587,7 @@ function extractPts(){
 
 // Game loop
 let frame=0;
-function resetGame(){ initFields(); ex=0.5; ez=0.5; }
+function resetGame(){ initFields(); ex=0.5; ez=0.5; waterLevel=WATER_MAX; }
 window.resetGame=resetGame;
 initFields();
 document.getElementById('loading').style.display='none';
@@ -428,21 +601,37 @@ function animate(){
   if(keys['ArrowDown']||keys['KeyS']) dz-=1;
   if(keys['ArrowLeft']||keys['KeyA']) dx+=1;
   if(keys['ArrowRight']||keys['KeyD']) dx-=1;
+  // Touch swipe input
+  if(touchDX||touchDZ){
+    const sens=0.15;
+    dx+=Math.max(-1,Math.min(1,touchDX*sens));
+    dz-=Math.max(-1,Math.min(1,touchDZ*sens));
+    touchDX=0; touchDZ=0;
+  }
   if(dx||dz){
     const l=Math.sqrt(dx*dx+dz*dz); dx/=l; dz/=l;
     ex=Math.max(0.02,Math.min(0.98,ex+dx*ENG_SPD));
     ez=Math.max(0.02,Math.min(0.98,ez+dz*ENG_SPD));
     eAng=Math.atan2(dx,dz);
   }
-  const spray=!!keys['Space'];
+  const wantSpray=!!keys['Space']||touchSpray;
+  // Refill water near the station
+  const rdx=ex-REFILL_POS[0], rdz=ez-REFILL_POS[1];
+  if(rdx*rdx+rdz*rdz<REFILL_R*REFILL_R){
+    const empty=1-waterLevel/WATER_MAX; // 1 when empty, 0 when full
+    waterLevel=Math.min(WATER_MAX,waterLevel+WATER_REFILL*empty);
+  }
+  const spray=wantSpray&&waterLevel>0;
+  if(spray) waterLevel=Math.max(0,waterLevel-WATER_USE);
 
   if(!gameOver){
     for(let s=0;s<SUBSTEPS;s++){ simStep(); if(spray) applyWater(ex,ez); }
   }
 
-  eng.position.set(ex,0,ez); eng.rotation.y=eAng;
+  eng.position.set(ex,terrainY(ex,ez),ez); eng.rotation.y=eAng;
   const flash=Math.sin(performance.now()*0.01)>0;
-  lbMat.color.setHex(flash?0x4488ff:0xff2200);
+  lbMat.color.setHex(flash?0x4488ff:0x111133);
+  lbMat2.color.setHex(flash?0x110000:0xff2200);
   eL.color.setHex(flash?0x4488ff:0xff2200);
 
   wCloud.visible=spray;
@@ -461,6 +650,7 @@ function animate(){
     document.getElementById('stat-trees').textContent=trees;
     document.getElementById('stat-burning').textContent=burning;
     document.getElementById('stat-saved').textContent=Math.round(trees/Math.max(1,initTC)*100)+'%';
+    document.getElementById('stat-water').textContent=Math.round(waterLevel);
     if(burning===0&&!gameOver&&frame>60){
       gameOver=true;
       document.getElementById('final-saved').textContent=Math.round(trees/Math.max(1,initTC)*100)+'%';
