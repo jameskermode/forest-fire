@@ -160,7 +160,8 @@ function applyWater(wx,wz){
       const dx=i/N-wx;
       if(dx*dx+dz2<r2){
         const c=i+j*N+k*NN;
-        temp[c]*=WATER_STR; fuel[c]*=0.92;
+        temp[c]*=WATER_STR;
+        if(temp[c]>IGN_TEMP) fuel[c]*=0.95;
       }
     }
   }
