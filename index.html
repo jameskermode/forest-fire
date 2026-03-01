@@ -604,7 +604,7 @@ function animate(){
   // Touch swipe input
   if(touchDX||touchDZ){
     const sens=0.15;
-    dx+=Math.max(-1,Math.min(1,touchDX*sens));
+    dx-=Math.max(-1,Math.min(1,touchDX*sens));
     dz-=Math.max(-1,Math.min(1,touchDZ*sens));
     touchDX=0; touchDZ=0;
   }
