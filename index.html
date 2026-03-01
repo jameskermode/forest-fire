@@ -73,6 +73,10 @@
     background: radial-gradient(circle, rgba(68,153,255,0.5), rgba(68,153,255,0.15));
   }
   #btn-spray.active { background: radial-gradient(circle, rgba(68,153,255,0.8), rgba(68,153,255,0.3)); }
+  #btn-orbit {
+    background: radial-gradient(circle, rgba(150,120,255,0.4), rgba(150,120,255,0.1));
+  }
+  #btn-orbit.active { background: radial-gradient(circle, rgba(150,120,255,0.8), rgba(150,120,255,0.3)); }
   #btn-reset {
     background: radial-gradient(circle, rgba(255,100,0,0.3), rgba(255,100,0,0.1));
     width: 48px; height: 48px; font-size: 11px;
@@ -103,6 +107,7 @@
 </div>
 <div id="touch-controls">
   <button id="btn-reset">RST</button>
+  <button id="btn-orbit">ORBIT</button>
   <button id="btn-spray">SPRAY</button>
 </div>
 <div id="game-over">
@@ -471,13 +476,13 @@ document.addEventListener('keyup',e=>{keys[e.code]=false;});
 let touchDX=0, touchDZ=0, touchSpray=false, touchId=null;
 document.addEventListener('touchstart',e=>{
   for(const t of e.changedTouches){
-    if(t.target.id==='btn-spray'||t.target.id==='btn-reset') continue;
+    if(t.target.id==='btn-spray'||t.target.id==='btn-reset'||t.target.id==='btn-orbit') continue;
     if(touchId===null){ touchId=t.identifier; touchDX=0; touchDZ=0; }
   }
 },{passive:true});
 document.addEventListener('touchmove',e=>{
   for(const t of e.changedTouches){
-    if(t.identifier===touchId){
+    if(t.identifier===touchId&&!orbitMode){
       // Use movement delta per frame, scaled for sensitivity
       touchDX+= t.clientX-(touchPrevX||t.clientX);
       touchDZ+= t.clientY-(touchPrevY||t.clientY);
@@ -496,6 +501,18 @@ let touchPrevX=0, touchPrevY=0;
 const btnSpray=document.getElementById('btn-spray');
 btnSpray.addEventListener('touchstart',e=>{touchSpray=true;btnSpray.classList.add('active');e.preventDefault();},{passive:false});
 btnSpray.addEventListener('touchend',e=>{touchSpray=false;btnSpray.classList.remove('active');},{passive:true});
+// Orbit button — hold to enable camera orbit, release to go back to move
+let orbitMode=false;
+const btnOrbit=document.getElementById('btn-orbit');
+btnOrbit.addEventListener('touchstart',e=>{
+  orbitMode=true; btnOrbit.classList.add('active');
+  if(isTouch){ ctrl.enableRotate=true; ctrl.enablePan=true; }
+  e.preventDefault();
+},{passive:false});
+btnOrbit.addEventListener('touchend',e=>{
+  orbitMode=false; btnOrbit.classList.remove('active');
+  if(isTouch){ ctrl.enableRotate=false; ctrl.enablePan=false; }
+},{passive:true});
 // Reset button
 document.getElementById('btn-reset').addEventListener('touchstart',e=>{resetGame();e.preventDefault();},{passive:false});
 
