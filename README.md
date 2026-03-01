@@ -7,10 +7,19 @@ generated forest from a spreading wildfire. Built with Three.js.
 
 ## Controls
 
+**Keyboard (desktop):**
 - **WASD / Arrow keys** — move the fire engine
 - **Space** — spray water
 - **R** — reset
 - **Mouse drag** — orbit camera
+
+**Touch (mobile):**
+- **Swipe** — move the fire engine
+- **SPRAY** button — spray water
+- **ORBIT** button (hold) — drag to rotate camera
+- **RST** button — reset
+
+Drive to the red water tank in the corner to refill your supply.
 
 ## Physics
 
