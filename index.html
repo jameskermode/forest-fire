@@ -1,0 +1,452 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Forest Fire Fighter</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #0a0a0f; overflow: hidden; font-family: 'Courier New', monospace; }
+  canvas { display: block; }
+  #hud {
+    position: absolute; top: 0; left: 0; right: 0;
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 12px 20px;
+    background: linear-gradient(to bottom, rgba(0,0,0,0.7), transparent);
+    pointer-events: none;
+  }
+  #hud .title {
+    color: #ff6633; font-size: 22px; font-weight: bold;
+    text-shadow: 0 0 20px rgba(255,100,0,0.5);
+    letter-spacing: 2px;
+  }
+  #hud .stats { display: flex; gap: 24px; }
+  #hud .stat { color: #ccc; font-size: 14px; }
+  #hud .stat span { font-weight: bold; font-size: 18px; }
+  .stat-trees span { color: #44cc44; }
+  .stat-burning span { color: #ff6633; }
+  .stat-saved span { color: #44aaff; }
+  #controls-hint {
+    position: absolute; bottom: 16px; left: 50%; transform: translateX(-50%);
+    color: rgba(255,255,255,0.5); font-size: 13px;
+    text-align: center; pointer-events: none;
+    transition: opacity 1s;
+  }
+  #controls-hint .key {
+    display: inline-block; border: 1px solid rgba(255,255,255,0.3);
+    border-radius: 4px; padding: 2px 8px; margin: 0 2px;
+    background: rgba(255,255,255,0.08);
+  }
+  #game-over {
+    position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+    text-align: center; display: none; pointer-events: none;
+  }
+  #game-over h1 {
+    font-size: 48px; color: #ff6633;
+    text-shadow: 0 0 40px rgba(255,100,0,0.6);
+    margin-bottom: 8px;
+  }
+  #game-over p { color: #ccc; font-size: 18px; }
+  #game-over .restart {
+    margin-top: 16px; color: #44aaff; font-size: 14px;
+    pointer-events: auto; cursor: pointer;
+  }
+  #loading {
+    position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+    color: #ff6633; font-size: 20px;
+    text-shadow: 0 0 20px rgba(255,100,0,0.4);
+  }
+</style>
+</head>
+<body>
+<div id="loading">Planting forest...</div>
+<div id="hud" style="display:none;">
+  <div class="title">FOREST FIRE FIGHTER</div>
+  <div class="stats">
+    <div class="stat stat-trees">Trees: <span id="stat-trees">0</span></div>
+    <div class="stat stat-burning">Burning: <span id="stat-burning">0</span></div>
+    <div class="stat stat-saved">Saved: <span id="stat-saved">0</span></div>
+  </div>
+</div>
+<div id="controls-hint">
+  <span class="key">W</span><span class="key">A</span><span class="key">S</span><span class="key">D</span> or
+  <span class="key">&uarr;</span><span class="key">&larr;</span><span class="key">&darr;</span><span class="key">&rarr;</span> Move
+  &nbsp;&nbsp;<span class="key">Space</span> Spray water
+  &nbsp;&nbsp;<span class="key">R</span> Reset
+  &nbsp;&nbsp;Mouse drag to orbit
+</div>
+<div id="game-over">
+  <h1>FIRE OUT!</h1>
+  <p>You saved <span id="final-saved">0</span> of the forest!</p>
+  <div class="restart">Press <span class="key">R</span> to play again</div>
+</div>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// ═══════════════════════════════════════
+//  SIMULATION
+// ═══════════════════════════════════════
+const N = 48;
+const DT = 0.014;
+const DIFFUSION = 0.0004;
+const BUOYANCY = 1.0;
+const COOLING = 0.008;
+const IGN_TEMP = 0.22;
+const BURN_RATE = 3.0;
+const FUEL_RATE = 0.01;
+const WATER_R = 0.07;
+const WATER_STR = 0.08;
+const ENG_SPD = 0.012;
+const SUBSTEPS = 3;
+
+const SZ = N*N*N, NN = N*N;
+let temp = new Float32Array(SZ);
+let tempN = new Float32Array(SZ);
+let fuel = new Float32Array(SZ);
+
+function idx(i,j,k){ return i + j*N + k*NN; }
+let initTC = 0, gameOver = false;
+
+function initFields(){
+  temp.fill(0); tempN.fill(0); fuel.fill(0);
+  // Place trees on a single ground layer (j=1, inside sim boundary)
+  for(let k=4;k<N-4;k++) for(let i=4;i<N-4;i++){
+    if(Math.random()>0.15) fuel[idx(i,1,k)] = 0.5+Math.random()*0.5;
+  }
+  // Ignite a circular patch
+  for(let k=4;k<=12;k++) for(let i=4;i<=12;i++){
+    if((i-8)*(i-8)+(k-8)*(k-8)<18)
+      temp[idx(i,1,k)] = 0.8+Math.random()*0.2;
+  }
+  initTC = cntF(fuel,0.1);
+  gameOver = false;
+  document.getElementById('game-over').style.display='none';
+}
+
+function cntF(a,t){ let c=0; for(let i=0;i<SZ;i++) if(a[i]>t) c++; return c; }
+
+function simStep(){
+  const invN=1/N;
+  for(let k=1;k<N-1;k++) for(let j=1;j<N-1;j++) for(let i=1;i<N-1;i++){
+    const c = i+j*N+k*NN;
+    const t=temp[c], f=fuel[c];
+    const lap=(temp[c+1]+temp[c-1]+temp[c+N]+temp[c-N]+temp[c+NN]+temp[c-NN]-6*t)*NN;
+    const v=BUOYANCY*t;
+    const adv = v>0 ? t-v*(t-temp[c-N])*invN : t;
+    const burn = t>IGN_TEMP && f>0;
+    const comb = burn ? BURN_RATE*f : 0;
+    let tN = adv + DT*(DIFFUSION*lap + comb - COOLING*t);
+    if(tN<0) tN=0;
+    tempN[c] = tN;
+    if(burn) fuel[c] = Math.max(0, f-FUEL_RATE*DT);
+  }
+  const sw=temp; temp=tempN; tempN=sw;
+}
+
+function applyWater(wx,wz){
+  const r2=WATER_R*WATER_R;
+  for(let k=0;k<N;k++){
+    const dz=k/N-wz, dz2=dz*dz;
+    if(dz2>r2) continue;
+    for(let j=0;j<N;j++) for(let i=0;i<N;i++){
+      const dx=i/N-wx;
+      if(dx*dx+dz2<r2){
+        const c=i+j*N+k*NN;
+        temp[c]*=WATER_STR; fuel[c]*=0.92;
+      }
+    }
+  }
+}
+
+// ═══════════════════════════════════════
+//  THREE.JS
+// ═══════════════════════════════════════
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x080810);
+scene.fog = new THREE.FogExp2(0x080810, 0.6);
+
+const camera = new THREE.PerspectiveCamera(55, innerWidth/innerHeight, 0.01, 20);
+camera.position.set(0.5, 0.75, -0.4);
+
+const renderer = new THREE.WebGLRenderer({antialias:true});
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.2;
+document.body.appendChild(renderer.domElement);
+
+const ctrl = new OrbitControls(camera, renderer.domElement);
+ctrl.target.set(0.5, 0.1, 0.5);
+ctrl.enableDamping=true; ctrl.dampingFactor=0.08;
+ctrl.maxPolarAngle=Math.PI*0.48;
+ctrl.minDistance=0.3; ctrl.maxDistance=3;
+
+scene.add(new THREE.AmbientLight(0x1a1510, 0.4));
+scene.add(new THREE.HemisphereLight(0x223344, 0x221100, 0.3));
+
+const fL1 = new THREE.PointLight(0xff5500,0,3);
+fL1.position.set(0.5,0.4,0.5); scene.add(fL1);
+const fL2 = new THREE.PointLight(0xff3300,0,2); scene.add(fL2);
+
+const gnd = new THREE.Mesh(
+  new THREE.PlaneGeometry(1.6,1.6),
+  new THREE.MeshLambertMaterial({color:0x0a2205})
+);
+gnd.rotation.x=-Math.PI/2; gnd.position.set(0.5,-0.005,0.5);
+scene.add(gnd);
+
+const grid=new THREE.GridHelper(1,20,0x112211,0x0a150a);
+grid.position.set(0.5,0.001,0.5); scene.add(grid);
+
+// Fire particles (custom shader for glow)
+const MF=40000;
+const fGeo=new THREE.BufferGeometry();
+const fPos=new Float32Array(MF*3);
+const fCol=new Float32Array(MF*3);
+const fSiz=new Float32Array(MF);
+fGeo.setAttribute('position',new THREE.BufferAttribute(fPos,3));
+fGeo.setAttribute('color',new THREE.BufferAttribute(fCol,3));
+fGeo.setAttribute('size',new THREE.BufferAttribute(fSiz,1));
+
+const fMat=new THREE.ShaderMaterial({
+  vertexShader:`
+    attribute float size;
+    varying vec3 vColor;
+    void main(){
+      vColor=color;
+      vec4 mv=modelViewMatrix*vec4(position,1.0);
+      gl_PointSize=size*(200.0/-mv.z);
+      gl_Position=projectionMatrix*mv;
+    }`,
+  fragmentShader:`
+    varying vec3 vColor;
+    void main(){
+      float d=length(gl_PointCoord-vec2(0.5));
+      if(d>0.5)discard;
+      float a=smoothstep(0.5,0.08,d);
+      gl_FragColor=vec4(vColor*a*2.0,a);
+    }`,
+  vertexColors:true, transparent:true,
+  blending:THREE.AdditiveBlending, depthWrite:false,
+});
+scene.add(new THREE.Points(fGeo,fMat));
+
+// Tree particles
+const MT=50000;
+const tGeo=new THREE.BufferGeometry();
+const tPos=new Float32Array(MT*3);
+const tCol=new Float32Array(MT*3);
+tGeo.setAttribute('position',new THREE.BufferAttribute(tPos,3));
+tGeo.setAttribute('color',new THREE.BufferAttribute(tCol,3));
+scene.add(new THREE.Points(tGeo,new THREE.PointsMaterial({size:0.015,vertexColors:true,sizeAttenuation:true})));
+
+// Tree trunks (instanced cylinders — tapered, wider at base)
+const MAX_TREES=1600;
+const trunkGeo=new THREE.CylinderGeometry(0.0015,0.003,1,5);
+const trunkMat=new THREE.MeshLambertMaterial({color:0x3d2010,emissive:0x1a0e05});
+const trunkMesh=new THREE.InstancedMesh(trunkGeo,trunkMat,MAX_TREES);
+trunkMesh.count=0; scene.add(trunkMesh);
+const _td=new THREE.Object3D();
+
+// Fire engine
+const eng=new THREE.Group();
+const ebody=new THREE.Mesh(new THREE.BoxGeometry(0.032,0.018,0.045),
+  new THREE.MeshLambertMaterial({color:0xcc0000,emissive:0x330000}));
+ebody.position.y=0.012; eng.add(ebody);
+const ecab=new THREE.Mesh(new THREE.BoxGeometry(0.025,0.014,0.02),
+  new THREE.MeshLambertMaterial({color:0xdd1111,emissive:0x220000}));
+ecab.position.set(0,0.024,-0.008); eng.add(ecab);
+const lbMat=new THREE.MeshBasicMaterial({color:0x4488ff});
+const lb=new THREE.Mesh(new THREE.BoxGeometry(0.02,0.004,0.004),lbMat);
+lb.position.set(0,0.033,-0.008); eng.add(lb);
+const eL=new THREE.PointLight(0x4488ff,0.3,0.15);
+eL.position.set(0,0.04,0); eng.add(eL);
+scene.add(eng);
+let ex=0.5, ez=0.5, eAng=0;
+
+// Water spray
+const MW=300;
+const wGeo=new THREE.BufferGeometry();
+const wPos=new Float32Array(MW*3);
+const wVel=new Float32Array(MW*3);
+const wLife=new Float32Array(MW);
+wGeo.setAttribute('position',new THREE.BufferAttribute(wPos,3));
+const wCloud=new THREE.Points(wGeo,new THREE.PointsMaterial({
+  size:0.008,color:0x4499ff,transparent:true,opacity:0.6,
+  blending:THREE.AdditiveBlending,depthWrite:false}));
+wCloud.visible=false; scene.add(wCloud);
+
+let wIdx=0;
+function spawnW(){
+  for(let n=0;n<15;n++){
+    const i=(wIdx++)%MW, a=Math.random()*Math.PI*2, sp=0.01+Math.random()*0.015;
+    wPos[i*3]=ex; wPos[i*3+1]=0.03; wPos[i*3+2]=ez;
+    wVel[i*3]=Math.cos(a)*sp; wVel[i*3+1]=0.008+Math.random()*0.01; wVel[i*3+2]=Math.sin(a)*sp;
+    wLife[i]=1;
+  }
+}
+function updateW(){
+  for(let i=0;i<MW;i++){
+    if(wLife[i]>0){
+      wPos[i*3]+=wVel[i*3]; wPos[i*3+1]+=wVel[i*3+1]; wPos[i*3+2]+=wVel[i*3+2];
+      wVel[i*3+1]-=0.001; wLife[i]-=0.04;
+      if(wPos[i*3+1]<0) wLife[i]=0;
+    } else wPos[i*3+1]=-10;
+  }
+  wGeo.attributes.position.needsUpdate=true;
+}
+
+// Input
+const keys={};
+document.addEventListener('keydown',e=>{
+  keys[e.code]=true;
+  if(['Space','ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.code)) e.preventDefault();
+  if(e.code==='KeyR') resetGame();
+});
+document.addEventListener('keyup',e=>{keys[e.code]=false;});
+
+// Deterministic hash for stable per-tree variation
+function hashF(a,b){ return (((a*2654435761|0)^(b*2246822519|0))>>>0)/4294967296; }
+
+// Extract points
+function extractPts(){
+  let fi=0,ti=0; const inv=1/N;
+  // Fire particles from full 3D grid (heat plume rises above ground)
+  for(let k=0;k<N;k++) for(let j=0;j<N;j++) for(let i=0;i<N;i++){
+    const c=i+j*N+k*NN, t=temp[c];
+    if(t>0.06&&fi<MF){
+      const x=i*inv, y=j*inv, z=k*inv;
+      fPos[fi*3]=x+(Math.random()-0.5)*0.9*inv;
+      fPos[fi*3+1]=y+(Math.random()-0.5)*0.9*inv;
+      fPos[fi*3+2]=z+(Math.random()-0.5)*0.9*inv;
+      fCol[fi*3]=Math.min(1,t*3);
+      fCol[fi*3+1]=Math.min(1,t*1.8)*t;
+      fCol[fi*3+2]=t*t*t;
+      fSiz[fi]=1.5+t*3; fi++;
+    }
+  }
+  // Tree trunks (instanced cylinders) + canopy particles from ground layer
+  let trc=0;
+  for(let k=0;k<N;k++) for(let i=0;i<N;i++){
+    const c=i+N+k*NN, f=fuel[c], t=temp[c];
+    if(f>0.1 && t<=0.06){
+      const x=i*inv, z=k*inv;
+      const h0=hashF(i,k), h1=hashF(k,i);
+      const treeH=0.1+h0*0.13;
+      const trunkH=treeH*0.45;
+      const canR=0.01+h1*0.012;
+      // Trunk: instanced cylinder
+      if(trc<MAX_TREES){
+        _td.position.set(x,trunkH/2,z);
+        _td.scale.set(1,trunkH,1);
+        _td.updateMatrix();
+        trunkMesh.setMatrixAt(trc,_td.matrix);
+        trc++;
+      }
+      // Canopy: 9 green particles in a cluster
+      for(let p=0;p<9&&ti<MT;p++){
+        const ph=hashF(i*51+p,k*73+p);
+        const pa=hashF(i*37+p*13,k*59+p*7)*6.2832;
+        const pr=hashF(i*41+p*17,k*67+p*11)*canR;
+        const py=trunkH+ph*0.8*(treeH-trunkH);
+        tPos[ti*3]=x+Math.cos(pa)*pr;
+        tPos[ti*3+1]=py;
+        tPos[ti*3+2]=z+Math.sin(pa)*pr;
+        const green=0.15+f*0.35+(ph-0.5)*0.1;
+        tCol[ti*3]=0.02+ph*0.03;
+        tCol[ti*3+1]=green;
+        tCol[ti*3+2]=0.01;
+        ti++;
+      }
+    }
+  }
+  trunkMesh.count=trc;
+  trunkMesh.instanceMatrix.needsUpdate=true;
+  fGeo.setDrawRange(0,fi);
+  fGeo.attributes.position.needsUpdate=true;
+  fGeo.attributes.color.needsUpdate=true;
+  fGeo.attributes.size.needsUpdate=true;
+  tGeo.setDrawRange(0,ti);
+  tGeo.attributes.position.needsUpdate=true;
+  tGeo.attributes.color.needsUpdate=true;
+  return fi;
+}
+
+// Game loop
+let frame=0;
+function resetGame(){ initFields(); ex=0.5; ez=0.5; }
+window.resetGame=resetGame;
+initFields();
+document.getElementById('loading').style.display='none';
+document.getElementById('hud').style.display='flex';
+
+function animate(){
+  requestAnimationFrame(animate); frame++;
+
+  let dx=0,dz=0;
+  if(keys['ArrowUp']||keys['KeyW']) dz+=1;
+  if(keys['ArrowDown']||keys['KeyS']) dz-=1;
+  if(keys['ArrowLeft']||keys['KeyA']) dx+=1;
+  if(keys['ArrowRight']||keys['KeyD']) dx-=1;
+  if(dx||dz){
+    const l=Math.sqrt(dx*dx+dz*dz); dx/=l; dz/=l;
+    ex=Math.max(0.02,Math.min(0.98,ex+dx*ENG_SPD));
+    ez=Math.max(0.02,Math.min(0.98,ez+dz*ENG_SPD));
+    eAng=Math.atan2(dx,dz);
+  }
+  const spray=!!keys['Space'];
+
+  if(!gameOver){
+    for(let s=0;s<SUBSTEPS;s++){ simStep(); if(spray) applyWater(ex,ez); }
+  }
+
+  eng.position.set(ex,0,ez); eng.rotation.y=eAng;
+  const flash=Math.sin(performance.now()*0.01)>0;
+  lbMat.color.setHex(flash?0x4488ff:0xff2200);
+  eL.color.setHex(flash?0x4488ff:0xff2200);
+
+  wCloud.visible=spray;
+  if(spray) spawnW();
+  updateW();
+
+  const nf=extractPts();
+  const inten=Math.min(3,nf/3000);
+  fL1.intensity=inten*2;
+  fL2.intensity=inten;
+  fL2.position.set(0.3+Math.sin(performance.now()*0.002)*0.15,0.15,
+    0.3+Math.cos(performance.now()*0.0017)*0.15);
+
+  if(frame%8===0){
+    const burning=cntF(temp,0.08), trees=cntF(fuel,0.1);
+    document.getElementById('stat-trees').textContent=trees;
+    document.getElementById('stat-burning').textContent=burning;
+    document.getElementById('stat-saved').textContent=Math.round(trees/Math.max(1,initTC)*100)+'%';
+    if(burning===0&&!gameOver&&frame>60){
+      gameOver=true;
+      document.getElementById('final-saved').textContent=Math.round(trees/Math.max(1,initTC)*100)+'%';
+      document.getElementById('game-over').style.display='block';
+    }
+  }
+  if(frame>300) document.getElementById('controls-hint').style.opacity='0';
+
+  ctrl.update();
+  renderer.render(scene,camera);
+}
+animate();
+
+window.addEventListener('resize',()=>{
+  camera.aspect=innerWidth/innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth,innerHeight);
+});
+</script>
+</body>
+</html>
