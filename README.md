@@ -20,19 +20,17 @@ The fire simulation runs on a 48x48x48 voxel grid with two scalar fields:
 Each simulation step (3 substeps per frame), the temperature field `T` is
 updated at every interior cell `(i, j, k)`:
 
-```
-∇²T = T[i+1] + T[i-1] + T[j+1] + T[j-1] + T[k+1] + T[k-1] − 6T    (discrete Laplacian)
+$$\nabla^2 T = T_{i+1} + T_{i-1} + T_{j+1} + T_{j-1} + T_{k+1} + T_{k-1} - 6T \qquad \text{(discrete Laplacian)}$$
 
-v = β · T                                                              (buoyancy velocity)
+$$v = \beta \, T \qquad \text{(buoyancy velocity)}$$
 
-T_adv = T − v · (T − T[j-1]) / N                                      (upwind advection)
+$$T_{\text{adv}} = T - \frac{v \left(T - T_{j-1}\right)}{N} \qquad \text{(upwind advection)}$$
 
-Q = B · f   if T > T_ign and f > 0,  else 0                           (combustion source)
+$$Q = \begin{cases} B \cdot f & \text{if } T > T_{\text{ign}} \text{ and } f > 0 \\ 0 & \text{otherwise} \end{cases} \qquad \text{(combustion source)}$$
 
-T_new = T_adv + Δt · (α · N² · ∇²T  +  Q  −  γ · T)                  (full update)
+$$T_{\text{new}} = T_{\text{adv}} + \Delta t \left( \alpha \, N^2 \nabla^2 T + Q - \gamma \, T \right) \qquad \text{(full update)}$$
 
-f_new = f − r · Δt   if burning                                       (fuel consumption)
-```
+$$f_{\text{new}} = f - r \, \Delta t \qquad \text{(fuel consumption, if burning)}$$
 
 | Symbol | Constant | Value  | Meaning                    |
 |--------|----------|--------|----------------------------|
